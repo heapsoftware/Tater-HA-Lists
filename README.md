@@ -48,9 +48,22 @@ list entity is `todo.shopping_list`; to-do lists are discovered from
 
 ## Install
 
-Copy `verba/ha_lists.py` into your Tater verba directory (or point
-`TATER_VERBA_DIR` at this repo's `verba/` folder) and reload verbas.
+**From the verba management area (recommended):** add this repo's manifest as
+a shop source in Tater's verba management area:
+
+```
+https://raw.githubusercontent.com/heapsoftware/Tater-HA-Lists/main/manifest.json
+```
+
+Then install **Home Assistant Lists & Tasks** from the catalog — Tater
+downloads `verba/ha_lists.py`, verifies its SHA256, and reloads verbas.
+
+**Manual:** copy `verba/ha_lists.py` into your Tater verba directory (or
+point `TATER_VERBA_DIR` at this repo's `verba/` folder) and reload verbas.
 Requires only what Tater already ships (`aiohttp`).
+
+**Prerequisite:** configure the `homeassistant` integration in Tater first —
+this verba has no settings of its own and reuses that connection.
 
 ## Development
 
