@@ -95,11 +95,31 @@ def _match_list(lists: list[dict], wanted: str) -> tuple[dict | None, bool]:
     return None, False
 
 
+def _looks_shopping(text: str) -> bool:
+    return any(keyword in text for keyword in _SHOPPING_KEYWORDS)
+
+
+def _match_list_from_text(lists: list[dict], text: str) -> tuple[dict | None, bool]:
+    """Match a list whose name appears in the user's utterance. Returns
+    (matched, ambiguous) — ambiguous means several list names were mentioned."""
+    hits = [
+        entry
+        for entry in lists
+        if entry["friendly_name"].lower() in text
+        or entry["entity_id"].lower() in text
+    ]
+    if len(hits) == 1:
+        return hits[0], False
+    if len(hits) > 1:
+        return None, True
+    return None, False
+
+
 class HaListsVerba(ToolVerba):
     name = "ha_lists"
     verba_name = "Home Assistant Lists & Tasks"
     pretty_name = "Home Assistant Lists & Tasks"
-    version = "0.2.1"
+    version = "0.2.2"
     # The canonical example the planner imitates for argument shape — the
     # named-list case is what it gets wrong on its own, so anchor it here.
     usage = '{"function": "ha_lists", "arguments": {"action": "add", "list_type": "todo", "item": "pickles", "list_name": "Costco"}}'
@@ -209,16 +229,16 @@ class HaListsVerba(ToolVerba):
         "required": ["action", "list_type"],
     }
 
-    async def handle_webui(self, args, llm_client):
-        return await self._run(args)
+    async def handle_webui(self, args, llm_client, request_text=""):
+        return await self._run(args, request_text)
 
-    async def handle_discord(self, args, llm_client):
-        return await self._run(args)
+    async def handle_discord(self, args, llm_client, request_text=""):
+        return await self._run(args, request_text)
 
-    async def handle_voice_core(self, args, llm_client):
-        return await self._run(args)
+    async def handle_voice_core(self, args, llm_client, request_text=""):
+        return await self._run(args, request_text)
 
-    async def _run(self, args) -> dict:
+    async def _run(self, args, request_text="") -> dict:
         args = args if isinstance(args, dict) else {}
         action = str(args.get("action") or "").strip().lower()
         raw_item = str(args.get("item") or "").strip()
@@ -251,7 +271,8 @@ class HaListsVerba(ToolVerba):
             )
         if status not in ("", "needs_action", "completed"):
             status = ""
-        list_type = self._resolve_list_type(list_type, list_name)
+        utterance = str(request_text or "").strip()
+        list_type = self._resolve_list_type(list_type, list_name, utterance)
         if list_type not in _LIST_TYPES:
             return action_failure(
                 code="missing_list_type",
@@ -274,6 +295,17 @@ class HaListsVerba(ToolVerba):
                 timeout=_HA_TIMEOUT, headers=_bearer_headers(token)
             ) as session:
                 entity_id, list_label = "", ""
+                if (
+                    list_type == "todo"
+                    and not list_name
+                    and utterance
+                    and _looks_shopping(utterance)
+                ):
+                    # The planner copies the usage example and sometimes
+                    # sends list_type=todo even when the user said
+                    # "shopping list"; trust the spoken words — they mean
+                    # the plain shopping list.
+                    list_type = "shopping"
                 if list_type == "shopping":
                     async with session.get(
                         f"{base}/api/states/{_SHOPPING_LIST_ENTITY}"
@@ -302,15 +334,16 @@ class HaListsVerba(ToolVerba):
                                 "Home Assistant."
                             ),
                         )
-                    chosen, ambiguous = self._choose_list(lists, list_name)
+                    chosen, ambiguous = self._choose_list(lists, list_name, utterance)
                     if chosen is None:
                         available = ", ".join(
                             entry["friendly_name"] for entry in lists
                         )
                         if ambiguous:
+                            wanted = list_name or "your request"
                             return action_failure(
                                 code="ambiguous_list",
-                                message=f"'{list_name}' matched several to-do lists.",
+                                message=f"'{wanted}' matched several to-do lists.",
                                 needs=["list_name"],
                                 say_hint=(
                                     "Ask which to-do list to use. "
@@ -361,9 +394,11 @@ class HaListsVerba(ToolVerba):
             logger.warning("Home Assistant unreachable: %s", exc)
             return _unreachable()
 
-    def _resolve_list_type(self, list_type: str, list_name: str) -> str:
+    def _resolve_list_type(
+        self, list_type: str, list_name: str, request_text: str = ""
+    ) -> str:
         wanted = str(list_name or "").strip().lower()
-        shopping_named = wanted and not any(k in wanted for k in _SHOPPING_KEYWORDS)
+        shopping_named = wanted and not _looks_shopping(wanted)
         if list_type == "shopping" and shopping_named:
             # "Add pickles to my Costco list": a named list that is not a
             # shopping synonym is a to-do list, even though it sounds like
@@ -371,17 +406,23 @@ class HaListsVerba(ToolVerba):
             return "todo"
         if list_type in _LIST_TYPES:
             return list_type
-        for keyword in _SHOPPING_KEYWORDS:
-            if keyword in wanted:
-                return "shopping"
+        if wanted:
+            return "shopping" if _looks_shopping(wanted) else "todo"
+        if request_text and _looks_shopping(request_text):
+            return "shopping"
         return ""
 
     def _choose_list(
-        self, lists: list[dict], list_name: str
+        self, lists: list[dict], list_name: str, request_text: str = ""
     ) -> tuple[dict | None, bool]:
         """Pick a list by fuzzy name match, or apply defaults when unnamed."""
         if list_name:
             return _match_list(lists, list_name)
+        text = str(request_text or "").strip().lower()
+        if text:
+            matched, ambiguous = _match_list_from_text(lists, text)
+            if matched or ambiguous:
+                return matched, ambiguous
         if len(lists) == 1:
             return lists[0], False
         return None, len(lists) > 1

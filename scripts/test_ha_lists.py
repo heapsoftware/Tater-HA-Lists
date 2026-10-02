@@ -45,11 +45,13 @@ class FakeHA:
             "todo.errands": [],
             "todo.chores": [],
             "todo.costco": [],
+            "todo.home_depot": [],
         }
         self.todo_lists = [
             ("todo.errands", "Errands"),
             ("todo.chores", "Chores"),
             ("todo.costco", "Costco"),
+            ("todo.home_depot", "Home Depot"),
         ]
         self.reject_extras = set()  # entities that reject due_date/description
         self.break_get_items = False  # when true, get_items returns 500
@@ -549,6 +551,70 @@ async def main() -> int:
             "shopping-synonym list_name stays on the shopping list",
             result.get("ok") is True and "soda" in summaries(ha, SHOPPING),
             str(result)[:200],
+        )
+
+        # --- routing from partial/malformed planner args (v0.2.2) ---
+        ha.items["todo.home_depot"].append({"summary": "brackets", "status": "needs_action"})
+        # planner sent show + list_name but NO list_type (logged failure 1)
+        result = await tool.handle_webui({"action": "show", "list_name": "Home Depot"}, None)
+        checks.check(
+            "show with list_name but no list_type routes to the named list",
+            result.get("ok") is True and "brackets" in result.get("say_hint", ""),
+            str(result)[:300],
+        )
+        # planner sent list_type=todo with no list_name while the user said
+        # "shopping list" (logged failure 2)
+        result = await tool.handle_webui(
+            {"action": "add", "list_type": "todo", "item": "pickets"},
+            None,
+            request_text="Add pickets to my shopping list.",
+        )
+        checks.check(
+            "spoken 'shopping list' overrides list_type=todo without list_name",
+            result.get("ok") is True and "pickets" in summaries(ha, SHOPPING),
+            str(result)[:300],
+        )
+        # bare show, no list_type/list_name, utterance names the shopping list
+        result = await tool.handle_webui(
+            {"action": "show"}, None, request_text="What's on my shopping list?"
+        )
+        checks.check(
+            "bare show with shopping in the utterance reads the shopping list",
+            result.get("ok") is True and "pickets" in result.get("say_hint", ""),
+            str(result)[:300],
+        )
+        # show on a todo list with no list_type but the utterance names it
+        result = await tool.handle_webui(
+            {"action": "show", "list_type": "todo"},
+            None,
+            request_text="What's on my Home Depot list?",
+        )
+        checks.check(
+            "show with utterance-only list name routes via fuzzy match",
+            result.get("ok") is True
+            and result.get("facts", {}).get("list") == "Home Depot"
+            and "brackets" in result.get("say_hint", ""),
+            str(result)[:300],
+        )
+        # truly unresolvable still asks
+        result = await tool.handle_webui({"action": "show"}, None)
+        checks.check(
+            "unresolvable show without utterance still asks",
+            result.get("ok") is False
+            and result.get("error", {}).get("code") == "missing_list_type",
+            str(result)[:200],
+        )
+        # utterance naming a todo list should not be hijacked by its shopping flavor
+        result = await tool.handle_webui(
+            {"action": "show", "list_type": "todo"},
+            None,
+            request_text="What's on my Costco list?",
+        )
+        checks.check(
+            "named list mention wins over shopping flavor",
+            result.get("ok") is True
+            and result.get("facts", {}).get("list") == "Costco",
+            str(result)[:300],
         )
 
         # --- validation ---
