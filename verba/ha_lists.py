@@ -99,8 +99,10 @@ class HaListsVerba(ToolVerba):
     name = "ha_lists"
     verba_name = "Home Assistant Lists & Tasks"
     pretty_name = "Home Assistant Lists & Tasks"
-    version = "0.2.0"
-    usage = '{"function": "ha_lists", "arguments": {"action": "add", "list_type": "shopping", "item": "milk", "quantity": "2"}}'
+    version = "0.2.1"
+    # The canonical example the planner imitates for argument shape — the
+    # named-list case is what it gets wrong on its own, so anchor it here.
+    usage = '{"function": "ha_lists", "arguments": {"action": "add", "list_type": "todo", "item": "pickles", "list_name": "Costco"}}'
     platforms = ["webui", "discord", "voice_core"]
     notifier = False
     verba_dec = "Manages Home Assistant to-do items and shopping lists."
@@ -108,10 +110,15 @@ class HaListsVerba(ToolVerba):
         "Adds, updates, removes, and reads back items on Home Assistant "
         "to-do lists and the shopping list."
     )
+    # NOTE: the planning LLM only sees the first ~77 characters of
+    # when_to_use (tool_purpose truncates at 80) plus the single `usage`
+    # example below. Those two strings carry the steering, so the lead
+    # sentence there must cover: show, shopping list, named lists.
     when_to_use = (
-        "Use when the user explicitly asks to add, update, rename, complete, "
-        "or remove items on a shopping list, grocery list, or to-do list, or "
-        "when the user asks what is on one of those lists."
+        "Add, edit, delete, or show items on the shopping list or any named "
+        "list. Use for requests like 'add pickles to my Costco list' or "
+        "'what's on my errands list' — store and errand lists are todo "
+        "lists with list_name."
     )
     how_to_use = (
         "Set action to add, edit, or delete and list_type to shopping or "
@@ -226,9 +233,15 @@ class HaListsVerba(ToolVerba):
         if action not in _ACTIONS:
             return action_failure(
                 code="unknown_action",
-                message=f"Unknown action '{action}'.",
+                message=(
+                    f"Unknown action '{action}'. Valid actions: add, edit, "
+                    "delete, show."
+                ),
                 needs=["action"],
-                say_hint="Ask whether the item should be added, updated, or removed.",
+                say_hint=(
+                    "Ask whether the item should be added, updated, or "
+                    "removed, or whether they want to hear what's on the list."
+                ),
             )
         if action != "show" and not raw_item:
             return action_failure(

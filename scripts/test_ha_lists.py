@@ -259,6 +259,22 @@ async def main() -> int:
             "action enum covers add/edit/delete/show",
             schema["properties"]["action"]["enum"] == ["add", "edit", "delete", "show"],
         )
+        # Hydra only shows the planning LLM the first ~77 chars of
+        # when_to_use (tool_purpose truncates at 80) plus the `usage`
+        # example — those two strings must carry the steering.
+        lead = tool.when_to_use[:77]
+        checks.check(
+            "when_to_use lead carries show + shopping + named lists",
+            "show" in lead and "shopping list" in lead and "named list" in lead,
+            lead,
+        )
+        usage_args = json.loads(tool.usage).get("arguments", {})
+        checks.check(
+            "usage example anchors the named-list routing",
+            usage_args.get("list_type") == "todo"
+            and usage_args.get("list_name") == "Costco",
+            tool.usage,
+        )
 
         install_fake_ha_config(ha.base_url)
 
@@ -540,6 +556,11 @@ async def main() -> int:
         checks.check(
             "unknown action fails cleanly",
             result.get("ok") is False and result.get("error", {}).get("code") == "unknown_action",
+            str(result)[:200],
+        )
+        checks.check(
+            "unknown action message lists valid actions",
+            "add, edit, delete, show" in result.get("error", {}).get("message", ""),
             str(result)[:200],
         )
         result = await tool.handle_webui({"action": "add", "item": "x"}, None)

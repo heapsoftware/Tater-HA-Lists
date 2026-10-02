@@ -4,7 +4,7 @@ A [Tater](https://github.com/TaterTotterson/Tater) Verba that manages Home
 Assistant to-do lists and the shopping list by voice or chat: add, edit
 (rename / mark complete / due date / details), remove, and read back items.
 
-Version **0.2.0** · Tater >= 0.4.0 · Platforms: webui, discord, voice_core
+Version **0.2.1** · Tater >= 0.4.0 · Platforms: webui, discord, voice_core
 
 ## How it works
 
@@ -76,5 +76,5 @@ The Tater clone used for development lives outside this repo (sibling
 python3 scripts/test_ha_lists.py
 ```
 
-Runs 42 checks against a fake Home Assistant REST server — no network,
+Runs 45 checks against a fake Home Assistant REST server — no network,
 no real HA. Returns non-zero on failure.
