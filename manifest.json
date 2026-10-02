@@ -4,14 +4,14 @@
     {
       "id": "ha_lists",
       "name": "Home Assistant Lists & Tasks",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "min_tater_version": 99,
-      "description": "Adds, updates, and removes items on Home Assistant to-do lists and the shopping list.",
+      "description": "Adds, updates, removes, and reads back items on Home Assistant to-do lists and the shopping list.",
       "portals": ["webui", "discord", "voice_core"],
       "notifier": false,
       "tags": ["home assistant", "shopping list", "todo", "lists", "groceries"],
       "entry": "verba/ha_lists.py",
-      "sha256": "de9d922ae29b27c3b51502f4a14602d1a6a04f640e16404601a0c56c0ad0342b"
+      "sha256": "17c3afae8c048fab8b5b34d4cd9a9e95c455842e0a3c9f503c74fef6ec2449ce"
     }
   ]
 }

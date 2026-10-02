@@ -44,9 +44,15 @@ class FakeHA:
             SHOPPING: [],
             "todo.errands": [],
             "todo.chores": [],
+            "todo.costco": [],
         }
-        self.todo_lists = [("todo.errands", "Errands"), ("todo.chores", "Chores")]
+        self.todo_lists = [
+            ("todo.errands", "Errands"),
+            ("todo.chores", "Chores"),
+            ("todo.costco", "Costco"),
+        ]
         self.reject_extras = set()  # entities that reject due_date/description
+        self.break_get_items = False  # when true, get_items returns 500
         self.add_calls = []
         self.update_calls = []
         self.remove_calls = []
@@ -97,6 +103,8 @@ class FakeHA:
     async def _get_items(self, request):
         if not self._auth_ok(request):
             return web.json_response({"error": "unauthorized"}, status=401)
+        if self.break_get_items:
+            return web.json_response({"error": "boom"}, status=500)
         if "return_response" not in request.query:
             return web.json_response({"error": "return_response required"}, status=400)
         data = await request.json()
@@ -243,13 +251,13 @@ async def main() -> int:
         )
         schema = tool.argument_schema
         checks.check(
-            "schema requires action/list_type/item",
-            set(schema.get("required", [])) == {"action", "list_type", "item"},
+            "schema requires action/list_type (item optional for show)",
+            set(schema.get("required", [])) == {"action", "list_type"},
             str(schema.get("required")),
         )
         checks.check(
-            "action enum covers add/edit/delete",
-            schema["properties"]["action"]["enum"] == ["add", "edit", "delete"],
+            "action enum covers add/edit/delete/show",
+            schema["properties"]["action"]["enum"] == ["add", "edit", "delete", "show"],
         )
 
         install_fake_ha_config(ha.base_url)
@@ -456,6 +464,74 @@ async def main() -> int:
         checks.check(
             "deleting a missing item fails cleanly",
             result.get("ok") is False and result.get("error", {}).get("code") == "item_not_found",
+            str(result)[:200],
+        )
+
+        # --- show: read items back aloud ---
+        ha.items[SHOPPING].append({"summary": "apples", "status": "needs_action"})
+        result = await tool.handle_webui({"action": "show", "list_type": "shopping"}, None)
+        checks.check(
+            "show reads shopping items without an item arg",
+            result.get("ok") is True
+            and "apples" in result.get("say_hint", "")
+            and result.get("facts", {}).get("items") == ["apples"],
+            str(result)[:200],
+        )
+        result = await tool.handle_webui(
+            {"action": "show", "list_type": "todo", "list_name": "errands"}, None
+        )
+        checks.check(
+            "show reads todo items",
+            result.get("ok") is True
+            and "Call the plumber" in result.get("say_hint", ""),
+            str(result)[:300],
+        )
+        result = await tool.handle_webui(
+            {"action": "show", "list_type": "todo", "list_name": "costco"}, None
+        )
+        checks.check(
+            "show reports an empty list",
+            result.get("ok") is True and "empty" in result.get("say_hint", "").lower(),
+            str(result)[:200],
+        )
+        result = await tool.handle_webui({"action": "show", "list_type": "todo"}, None)
+        checks.check(
+            "show without list name asks which list",
+            result.get("ok") is False
+            and "list_name" in (result.get("needs") or []),
+            str(result)[:300],
+        )
+        ha.break_get_items = True
+        result = await tool.handle_webui({"action": "show", "list_type": "shopping"}, None)
+        checks.check(
+            "show with failed get_items fails cleanly (not 'empty')",
+            result.get("ok") is False and result.get("error", {}).get("code") == "ha_error",
+            str(result)[:200],
+        )
+        ha.break_get_items = False
+
+        # --- store-named lists route away from the shopping list ---
+        result = await tool.handle_webui(
+            {"action": "add", "list_type": "shopping", "item": "pickles", "list_name": "Costco"},
+            None,
+        )
+        checks.check(
+            "store-named list routes to the todo list",
+            result.get("ok") is True and result.get("facts", {}).get("list") == "Costco",
+            str(result)[:200],
+        )
+        checks.check(
+            "pickles not on the shopping list",
+            "pickles" not in summaries(ha, SHOPPING),
+            str(summaries(ha, SHOPPING)),
+        )
+        result = await tool.handle_webui(
+            {"action": "add", "list_type": "shopping", "item": "soda", "list_name": "the grocery list"},
+            None,
+        )
+        checks.check(
+            "shopping-synonym list_name stays on the shopping list",
+            result.get("ok") is True and "soda" in summaries(ha, SHOPPING),
             str(result)[:200],
         )
 

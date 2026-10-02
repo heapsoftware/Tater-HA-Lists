@@ -2,8 +2,9 @@
 
 Loaded from the verba directory by verba_loader.py, which expects a
 module-level `verba` instance of ToolVerba. One Verba = one tool: this file
-is the `ha_lists` tool for Hydra. The LLM picks an `action` (add/edit/delete)
-and a `list_type` (shopping/todo); dispatch happens here.
+is the `ha_lists` tool for Hydra. The LLM picks an `action`
+(add/edit/delete/show) and a `list_type` (shopping/todo); dispatch happens
+here.
 
 The Home Assistant connection (base URL + long-lived token) comes from the
 `homeassistant` integration installed in Tater; this Verba defines no
@@ -24,7 +25,7 @@ logger = logging.getLogger("ha_lists")
 _HA_TIMEOUT = aiohttp.ClientTimeout(total=15)
 _TODO_ENTITY_PREFIX = "todo."
 _SHOPPING_LIST_ENTITY = "todo.shopping_list"
-_ACTIONS = {"add", "edit", "delete"}
+_ACTIONS = {"add", "edit", "delete", "show"}
 _LIST_TYPES = {"shopping", "todo"}
 _SHOPPING_KEYWORDS = ("shop", "grocer")
 
@@ -98,29 +99,32 @@ class HaListsVerba(ToolVerba):
     name = "ha_lists"
     verba_name = "Home Assistant Lists & Tasks"
     pretty_name = "Home Assistant Lists & Tasks"
-    version = "0.1.0"
+    version = "0.2.0"
     usage = '{"function": "ha_lists", "arguments": {"action": "add", "list_type": "shopping", "item": "milk", "quantity": "2"}}'
     platforms = ["webui", "discord", "voice_core"]
     notifier = False
     verba_dec = "Manages Home Assistant to-do items and shopping lists."
     description = (
-        "Adds, updates, and removes items on Home Assistant to-do lists and "
-        "the shopping list."
+        "Adds, updates, removes, and reads back items on Home Assistant "
+        "to-do lists and the shopping list."
     )
     when_to_use = (
         "Use when the user explicitly asks to add, update, rename, complete, "
-        "or remove items on a shopping list, grocery list, or to-do list."
+        "or remove items on a shopping list, grocery list, or to-do list, or "
+        "when the user asks what is on one of those lists."
     )
     how_to_use = (
         "Set action to add, edit, or delete and list_type to shopping or "
-        "todo; item is the item or task name."
+        "todo, plus item; use action=show to read the items on a list "
+        "back to the user (item not needed)."
     )
     common_needs = ["action", "item"]
     example_calls = [
         "Add milk to the shopping list",
+        "Add pickles to my Costco list",
         "Add call the plumber to my errands list for tomorrow",
         "Mark milk as done on the shopping list",
-        "Rename milk to whole milk on the shopping list",
+        "What's on my Costco list?",
         "Remove milk from the shopping list",
     ]
     missing_info_prompts = [
@@ -134,20 +138,28 @@ class HaListsVerba(ToolVerba):
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "edit", "delete"],
-                "description": "What to do with the item.",
+                "enum": ["add", "edit", "delete", "show"],
+                "description": (
+                    "What to do: add/edit/delete an item, or show to read "
+                    "the items on a list."
+                ),
             },
             "list_type": {
                 "type": "string",
                 "enum": ["shopping", "todo"],
                 "description": (
-                    "'shopping' for the shopping/grocery list, 'todo' for any "
-                    "other to-do list. Always set this."
+                    "'shopping' only for the plain shopping/grocery list; "
+                    "'todo' for ANY named list, including store lists "
+                    "(e.g. a Costco list) and errand/task lists. Always set "
+                    "this."
                 ),
             },
             "item": {
                 "type": "string",
-                "description": "The item or task name, e.g. 'milk' or 'Call the plumber'.",
+                "description": (
+                    "The item or task name, e.g. 'milk' or 'Call the "
+                    "plumber'. Required for add/edit/delete; omit for show."
+                ),
             },
             "quantity": {
                 "type": "string",
@@ -159,8 +171,9 @@ class HaListsVerba(ToolVerba):
             "list_name": {
                 "type": "string",
                 "description": (
-                    "todo lists only: which to-do list (fuzzy matched). "
-                    "Omit for the shopping list."
+                    "todo lists only: which named to-do list, e.g. 'Costco' "
+                    "or 'errands' (fuzzy matched). Omit for the shopping "
+                    "list."
                 ),
             },
             "rename": {
@@ -186,7 +199,7 @@ class HaListsVerba(ToolVerba):
                 ),
             },
         },
-        "required": ["action", "list_type", "item"],
+        "required": ["action", "list_type"],
     }
 
     async def handle_webui(self, args, llm_client):
@@ -217,7 +230,7 @@ class HaListsVerba(ToolVerba):
                 needs=["action"],
                 say_hint="Ask whether the item should be added, updated, or removed.",
             )
-        if not raw_item:
+        if action != "show" and not raw_item:
             return action_failure(
                 code="missing_item",
                 message="No item or task name was provided.",
@@ -303,6 +316,8 @@ class HaListsVerba(ToolVerba):
                     entity_id = chosen["entity_id"]
                     list_label = chosen["friendly_name"]
 
+                if action == "show":
+                    return await self._show(session, base, entity_id, list_label)
                 if action == "add":
                     return await self._add(
                         session,
@@ -334,9 +349,15 @@ class HaListsVerba(ToolVerba):
             return _unreachable()
 
     def _resolve_list_type(self, list_type: str, list_name: str) -> str:
+        wanted = str(list_name or "").strip().lower()
+        shopping_named = wanted and not any(k in wanted for k in _SHOPPING_KEYWORDS)
+        if list_type == "shopping" and shopping_named:
+            # "Add pickles to my Costco list": a named list that is not a
+            # shopping synonym is a to-do list, even though it sounds like
+            # shopping. Store lists are todo.* entities in Home Assistant.
+            return "todo"
         if list_type in _LIST_TYPES:
             return list_type
-        wanted = str(list_name or "").strip().lower()
         for keyword in _SHOPPING_KEYWORDS:
             if keyword in wanted:
                 return "shopping"
@@ -536,6 +557,30 @@ class HaListsVerba(ToolVerba):
             summary_for_user=f"Removed {raw_item} from your {list_label}.",
         )
 
+    async def _show(self, session, base, entity_id: str, list_label: str) -> dict:
+        items = await self._fetch_summaries(
+            session, base, entity_id, "needs_action"
+        )
+        if items is None:
+            logger.warning("show could not read items from %s", entity_id)
+            return action_failure(
+                code="ha_error",
+                message=f"Home Assistant failed to return the items on {list_label}.",
+                say_hint=(
+                    f"Tell the user you couldn't retrieve the {list_label}."
+                ),
+            )
+        if not items:
+            say_hint = f"Your {list_label} is empty."
+        else:
+            say_hint = f"Your {list_label} has: {', '.join(items)}."
+        logger.info("Showed %d items from %s", len(items), entity_id)
+        return action_success(
+            facts={"action": "show", "list": list_label, "items": items},
+            say_hint=say_hint,
+            summary_for_user=say_hint,
+        )
+
     async def _todo_lists(self, session, base) -> list[dict]:
         async with session.get(f"{base}/api/states") as resp:
             resp.raise_for_status()
@@ -573,6 +618,13 @@ class HaListsVerba(ToolVerba):
         self, session, base, entity_id: str, status: str
     ) -> list[str]:
         """Item summaries with the given status; empty list on failure."""
+        names = await self._fetch_summaries(session, base, entity_id, status)
+        return names if names is not None else []
+
+    async def _fetch_summaries(
+        self, session, base, entity_id: str, status: str
+    ) -> list[str] | None:
+        """Item summaries with the given status; None when HA can't answer."""
         url = f"{base}/api/services/todo/get_items?return_response"
         async with session.post(
             url, json={"entity_id": entity_id, "status": status}
@@ -581,7 +633,7 @@ class HaListsVerba(ToolVerba):
                 logger.warning(
                     "todo.get_items failed (%s) for %s", resp.status, entity_id
                 )
-                return []
+                return None
             payload = await resp.json(content_type=None)
         response_data = (
             payload.get("service_response") if isinstance(payload, dict) else None
@@ -590,7 +642,7 @@ class HaListsVerba(ToolVerba):
             response_data.get("items") if isinstance(response_data, dict) else response_data
         )
         if not isinstance(items, list):
-            return []
+            return None
         names = []
         for entry in items:
             if isinstance(entry, dict):

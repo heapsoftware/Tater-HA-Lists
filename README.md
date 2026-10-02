@@ -2,9 +2,9 @@
 
 A [Tater](https://github.com/TaterTotterson/Tater) Verba that manages Home
 Assistant to-do lists and the shopping list by voice or chat: add, edit
-(rename / mark complete / due date / details), and remove items.
+(rename / mark complete / due date / details), remove, and read back items.
 
-Version **0.1.0** · Tater >= 0.4.0 · Platforms: webui, discord, voice_core
+Version **0.2.0** · Tater >= 0.4.0 · Platforms: webui, discord, voice_core
 
 ## How it works
 
@@ -13,9 +13,9 @@ One Verba = one tool named `ha_lists`. The LLM picks an `action` and a
 
 | argument | values | notes |
 |---|---|---|
-| `action` | `add` / `edit` / `delete` | what to do |
-| `list_type` | `shopping` / `todo` | `shopping` is the shopping/grocery list; `todo` is any other to-do list |
-| `item` | text | the item or task name |
+| `action` | `add` / `edit` / `delete` / `show` | what to do; `show` reads a list's items back |
+| `list_type` | `shopping` / `todo` | `shopping` is only the plain shopping/grocery list; `todo` is any named list (store lists like Costco, errands, chores) |
+| `item` | text | the item or task name; not needed for `show` |
 | `quantity` | text | shopping adds only, folded into the name ("milk (2)") |
 | `list_name` | text | todo lists only, fuzzy matched against friendly names |
 | `rename` | text | edit only |
@@ -26,7 +26,9 @@ One Verba = one tool named `ha_lists`. The LLM picks an `action` and a
 Example calls:
 
 - "Add milk to the shopping list"
+- "Add pickles to my Costco list"
 - "Add call the plumber to my errands list for tomorrow"
+- "What's on my Costco list?"
 - "Mark milk as done on the shopping list"
 - "Rename milk to whole milk on the shopping list"
 - "Remove milk from the shopping list"
@@ -74,5 +76,5 @@ The Tater clone used for development lives outside this repo (sibling
 python3 scripts/test_ha_lists.py
 ```
 
-Runs 34 checks against a fake Home Assistant REST server — no network,
+Runs 42 checks against a fake Home Assistant REST server — no network,
 no real HA. Returns non-zero on failure.
