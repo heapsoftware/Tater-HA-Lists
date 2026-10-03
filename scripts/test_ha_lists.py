@@ -55,6 +55,8 @@ class FakeHA:
         ]
         self.reject_extras = set()  # entities that reject due_date/description
         self.break_get_items = False  # when true, get_items returns 500
+        self.reject_status_filter = False  # when true, get_items rejects `status` (old HA)
+        self.keyed_items_shape = False  # when true, respond with {entity_id: {"items": [...]}}
         self.add_calls = []
         self.update_calls = []
         self.remove_calls = []
@@ -113,13 +115,23 @@ class FakeHA:
         entity_id = data.get("entity_id")
         if not self._entity_exists(entity_id):
             return web.json_response({"error": "unknown entity"}, status=400)
+        if self.reject_status_filter and "status" in data:
+            return web.json_response(
+                {"error": "extra keys not allowed @ data['status']"}, status=400
+            )
         wanted = data.get("status", "needs_action")
-        items = [
+        if isinstance(wanted, list):
+            # Mirror HA's EnsureList: accept both string and [string] forms.
+            wanted = wanted[0] if wanted else "needs_action"
+        body = [
             dict(item)
             for item in self.items.get(entity_id, [])
             if item.get("status") == wanted
         ]
-        return web.json_response({"changed_states": [], "service_response": {"items": items}})
+        service_response = (
+            {entity_id: {"items": body}} if self.keyed_items_shape else {"items": body}
+        )
+        return web.json_response({"changed_states": [], "service_response": service_response})
 
     async def _add_item(self, request):
         if not self._auth_ok(request):
@@ -527,6 +539,34 @@ async def main() -> int:
             str(result)[:200],
         )
         ha.break_get_items = False
+
+        # --- get_items robustness (v0.2.3) ---
+        # Older HA builds reject the `status` field entirely; the verba must
+        # retry without it and filter client-side. At this point the shopping
+        # list holds "apples" (active) and "milk" (completed).
+        ha.reject_status_filter = True
+        result = await tool.handle_webui({"action": "show", "list_type": "shopping"}, None)
+        ha.reject_status_filter = False
+        checks.check(
+            "get_items status rejection retried without status filter",
+            result.get("ok") is True
+            and "apples" in result.get("say_hint", "")
+            and "milk" not in result.get("say_hint", ""),
+            str(result)[:300],
+        )
+        # Some HA versions respond with per-entity keyed service_response.
+        ha.keyed_items_shape = True
+        result = await tool.handle_webui(
+            {"action": "show", "list_type": "todo", "list_name": "Costco"}, None
+        )
+        ha.keyed_items_shape = False
+        checks.check(
+            "keyed-by-entity service_response shape is parsed",
+            result.get("ok") is True
+            and result.get("facts", {}).get("list") == "Costco"
+            and result.get("facts", {}).get("items") == [],
+            str(result)[:300],
+        )
 
         # --- store-named lists route away from the shopping list ---
         result = await tool.handle_webui(

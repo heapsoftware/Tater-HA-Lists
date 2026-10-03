@@ -119,7 +119,7 @@ class HaListsVerba(ToolVerba):
     name = "ha_lists"
     verba_name = "Home Assistant Lists & Tasks"
     pretty_name = "Home Assistant Lists & Tasks"
-    version = "0.2.2"
+    version = "0.2.3"
     # The canonical example the planner imitates for argument shape — the
     # named-list case is what it gets wrong on its own, so anchor it here.
     usage = '{"function": "ha_lists", "arguments": {"action": "add", "list_type": "todo", "item": "pickles", "list_name": "Costco"}}'
@@ -612,14 +612,19 @@ class HaListsVerba(ToolVerba):
         )
 
     async def _show(self, session, base, entity_id: str, list_label: str) -> dict:
-        items = await self._fetch_summaries(
+        items, detail = await self._fetch_summaries(
             session, base, entity_id, "needs_action"
         )
         if items is None:
-            logger.warning("show could not read items from %s", entity_id)
+            logger.warning("show could not read items from %s: %s", entity_id, detail)
+            message = (
+                f"Home Assistant failed to return the items on {list_label}"
+                + (f" ({detail})" if detail else "")
+                + "."
+            )
             return action_failure(
                 code="ha_error",
-                message=f"Home Assistant failed to return the items on {list_label}.",
+                message=message,
                 say_hint=(
                     f"Tell the user you couldn't retrieve the {list_label}."
                 ),
@@ -672,36 +677,94 @@ class HaListsVerba(ToolVerba):
         self, session, base, entity_id: str, status: str
     ) -> list[str]:
         """Item summaries with the given status; empty list on failure."""
-        names = await self._fetch_summaries(session, base, entity_id, status)
+        names, _ = await self._fetch_summaries(session, base, entity_id, status)
         return names if names is not None else []
 
     async def _fetch_summaries(
         self, session, base, entity_id: str, status: str
-    ) -> list[str] | None:
-        """Item summaries with the given status; None when HA can't answer."""
+    ) -> tuple[list[str] | None, str]:
+        """(Item summaries with the given status, detail) — items is None
+        when HA can't answer, detail carries HTTP codes/shapes for the
+        failure message.
+
+        The `status` field is newer and rejected outright by some HA builds
+        (schema is a list — EnsureList wraps our string), so it is retried
+        without and the active/completed filter is applied client-side. The
+        service response may be {"items": [...]}, a raw list, or
+        {entity_id: {"items": [...]}} depending on HA version — all handled.
+        """
         url = f"{base}/api/services/todo/get_items?return_response"
+        items: list | None = None
+        detail_parts: list[str] = []
         async with session.post(
-            url, json={"entity_id": entity_id, "status": status}
+            url, json={"entity_id": entity_id, "status": [status]}
         ) as resp:
             if resp.status >= 400:
                 logger.warning(
-                    "todo.get_items failed (%s) for %s", resp.status, entity_id
+                    "todo.get_items with status rejected (%s) for %s; "
+                    "retrying without the status filter",
+                    resp.status,
+                    entity_id,
                 )
-                return None
-            payload = await resp.json(content_type=None)
+                detail_parts.append(f"HTTP {resp.status} with status filter")
+            else:
+                payload = await resp.json(content_type=None)
+                items = self._items_from_response(payload, entity_id)
+                if items is None:
+                    logger.warning(
+                        "todo.get_items returned an unrecognized response "
+                        "for %s: %.300s",
+                        entity_id,
+                        str(payload),
+                    )
+                    detail_parts.append("unrecognized response shape")
+        if items is None:
+            async with session.post(url, json={"entity_id": entity_id}) as resp:
+                if resp.status >= 400:
+                    logger.warning(
+                        "todo.get_items failed (%s) for %s", resp.status, entity_id
+                    )
+                    detail_parts.append(f"HTTP {resp.status} without status filter")
+                    return None, "; ".join(detail_parts)
+                payload = await resp.json(content_type=None)
+                items = self._items_from_response(payload, entity_id)
+                if items is None:
+                    logger.warning(
+                        "todo.get_items returned an unrecognized response "
+                        "for %s: %.300s",
+                        entity_id,
+                        str(payload),
+                    )
+                    detail_parts.append("unrecognized response shape")
+        if items is None:
+            return None, "; ".join(detail_parts)
+        wanted_status = status if status in ("needs_action", "completed") else ""
+        names = []
+        for entry in items:
+            if not isinstance(entry, dict):
+                continue
+            if wanted_status and str(entry.get("status") or "").strip() not in (
+                wanted_status,
+                "",
+            ):
+                continue
+            names.append(str(entry.get("summary") or "").strip())
+        return [name for name in names if name], ""
+
+    @staticmethod
+    def _items_from_response(payload, entity_id: str) -> list | None:
         response_data = (
             payload.get("service_response") if isinstance(payload, dict) else None
         )
-        items = (
-            response_data.get("items") if isinstance(response_data, dict) else response_data
-        )
-        if not isinstance(items, list):
-            return None
-        names = []
-        for entry in items:
-            if isinstance(entry, dict):
-                names.append(str(entry.get("summary") or "").strip())
-        return [name for name in names if name]
+        if isinstance(response_data, dict):
+            # Per-entity keyed shape: {entity_id: {"items": [...]}}
+            inner = response_data.get(entity_id)
+            if isinstance(inner, dict):
+                return inner.get("items")
+            if isinstance(inner, list):
+                return inner
+            return response_data.get("items")
+        return response_data if isinstance(response_data, list) else None
 
     async def _post_service(
         self, session, base, service: str, payload: dict
